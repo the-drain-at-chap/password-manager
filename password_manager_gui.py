@@ -10,13 +10,15 @@ import threading
 from cryptography.fernet import Fernet
 from collections import deque
 import pystray
-from PIL import Image, ImageDraw
+from PIL import Image, ImageTk
+import io
 
 class PasswordManager:
     def __init__(self):
         self.key = None
         self.password_file = "passwords.json"
         self.password_dict = {}
+        self.favorites = set()
 
     def create_key(self, master_password):
         salt = b'salt_'  # In a real application, use a random salt and store it securely
@@ -34,13 +36,19 @@ class PasswordManager:
                 encrypted_data = f.read()
                 fernet = Fernet(self.key)
                 decrypted_data = fernet.decrypt(encrypted_data.encode())
-                self.password_dict = json.loads(decrypted_data)
+                data = json.loads(decrypted_data)
+                self.password_dict = data.get("passwords", {})
+                self.favorites = set(data.get("favorites", []))
         except FileNotFoundError:
             pass
 
     def save_passwords(self):
+        data = {
+            "passwords": self.password_dict,
+            "favorites": list(self.favorites)
+        }
         fernet = Fernet(self.key)
-        encrypted_data = fernet.encrypt(json.dumps(self.password_dict).encode())
+        encrypted_data = fernet.encrypt(json.dumps(data).encode())
         with open(self.password_file, "w") as f:
             f.write(encrypted_data.decode())
 
@@ -74,7 +82,7 @@ class PasswordManager:
         return False
 
     def list_accounts(self):
-        return list(self.password_dict.keys())
+        return sorted(list(self.password_dict.keys()))
 
     def change_master_password(self, new_master_password):
         # Decrypt all passwords with the old key
@@ -87,6 +95,20 @@ class PasswordManager:
         self.password_dict = decrypted_data
         self.save_passwords()
 
+    def add_to_favorites(self, account_name):
+        self.favorites.add(account_name)
+        self.save_passwords()
+
+    def remove_from_favorites(self, account_name):
+        self.favorites.discard(account_name)
+        self.save_passwords()
+
+    def is_favorite(self, account_name):
+        return account_name in self.favorites
+
+    def get_favorites(self):
+        return sorted([account for account in self.password_dict if account in self.favorites])   
+
 class PasswordManagerGUI:
     def __init__(self, master):
         self.master = master
@@ -98,6 +120,9 @@ class PasswordManagerGUI:
         
         self.setup_gui()
         self.setup_hotkeys()  # Add this line
+        # Define Unicode characters for stars
+        self.star_empty = "☆"
+        self.star_filled = "★"
 
 
     def setup_hotkeys(self):
@@ -127,6 +152,7 @@ class PasswordManagerGUI:
         
         self.setup_add_tab()
         self.setup_list_tab()
+        self.setup_favorites_tab()
         self.setup_remove_tab()
         self.setup_change_master_password_tab()
         
@@ -157,9 +183,15 @@ class PasswordManagerGUI:
         self.list_search_var.trace("w", lambda name, index, mode: self.update_list())
         ttk.Entry(search_frame, textvariable=self.list_search_var).pack(side=tk.LEFT, expand=True, fill='x')
 
-        self.account_listbox = tk.Listbox(list_frame)
-        self.account_listbox.pack(expand=True, fill='both', padx=5, pady=5)
-        self.account_listbox.bind('<<ListboxSelect>>', self.on_account_select)
+        # Create Treeview
+        self.account_tree = ttk.Treeview(list_frame, columns=('favorite', 'account'), show='headings', selectmode='browse')
+        self.account_tree.heading('favorite', text='')
+        self.account_tree.heading('account', text='Account')
+        self.account_tree.column('favorite', width=30, stretch=tk.NO)
+        self.account_tree.column('account', width=200, stretch=tk.YES)
+        self.account_tree.pack(expand=True, fill='both', padx=5, pady=5)
+
+        self.account_tree.bind('<ButtonRelease-1>', self.on_account_click)
         
         self.account_info = tk.StringVar()
         ttk.Label(list_frame, textvariable=self.account_info).pack(padx=5, pady=5)
@@ -167,6 +199,52 @@ class PasswordManagerGUI:
         self.copy_button = ttk.Button(list_frame, text="Copy Password", command=self.copy_password)
         self.copy_button.pack(padx=5, pady=5)
         self.copy_button.config(state='disabled')
+
+    def on_account_click(self, event):
+        region = self.account_tree.identify("region", event.x, event.y)
+        if region == "cell":
+            column = self.account_tree.identify_column(event.x)
+            item = self.account_tree.identify_row(event.y)
+            if item:
+                values = self.account_tree.item(item, 'values')
+                if column == '#1':  # Star column
+                    self.toggle_favorite(values[1])  # values[1] is the account name
+                elif column == '#2':  # Account name column
+                    self.show_account_info(values[1])
+
+    def show_account_info(self, account_name):
+        account = self.pm.get_account(account_name)
+        if account:
+            self.account_info.set(f"Username: {account['username']}\nPassword: {account['password']}")
+            self.copy_button.config(state='normal')
+        else:
+            self.account_info.set("Account information not found.")
+            self.copy_button.config(state='disabled')
+
+    def toggle_favorite(self, account_name):
+        if self.pm.is_favorite(account_name):
+            self.pm.remove_from_favorites(account_name)
+        else:
+            self.pm.add_to_favorites(account_name)
+        self.update_list()
+        self.update_favorites()
+
+    def setup_favorites_tab(self):
+        favorites_frame = ttk.Frame(self.notebook)
+        self.notebook.add(favorites_frame, text="Favorites")
+        
+        self.favorites_tree = ttk.Treeview(favorites_frame, columns=('account',), show='headings', selectmode='browse')
+        self.favorites_tree.heading('account', text='Account')
+        self.favorites_tree.column('account', width=200, stretch=tk.YES)
+        self.favorites_tree.pack(expand=True, fill='both', padx=5, pady=5)
+        self.favorites_tree.bind('<<TreeviewSelect>>', self.on_favorite_select)
+        
+        self.favorite_info = tk.StringVar()
+        ttk.Label(favorites_frame, textvariable=self.favorite_info).pack(padx=5, pady=5)
+        
+        self.copy_favorite_button = ttk.Button(favorites_frame, text="Copy Password", command=self.copy_favorite_password)
+        self.copy_favorite_button.pack(padx=5, pady=5)
+        self.copy_favorite_button.config(state='disabled')
         
     def setup_remove_tab(self):
         remove_frame = ttk.Frame(self.notebook)
@@ -180,26 +258,30 @@ class PasswordManagerGUI:
         self.remove_search_var.trace("w", lambda name, index, mode: self.update_remove_list())
         ttk.Entry(search_frame, textvariable=self.remove_search_var).pack(side=tk.LEFT, expand=True, fill='x')
 
-        self.remove_listbox = tk.Listbox(remove_frame, selectmode=tk.MULTIPLE)
-        self.remove_listbox.pack(expand=True, fill='both', padx=5, pady=5)
+        # Create Treeview
+        self.remove_tree = ttk.Treeview(remove_frame, columns=('account',), show='headings', selectmode='extended')
+        self.remove_tree.heading('account', text='Account')
+        self.remove_tree.column('account', width=200, stretch=tk.YES)
+        self.remove_tree.pack(expand=True, fill='both', padx=5, pady=5)
         
         remove_button = ttk.Button(remove_frame, text="Remove Selected Accounts", command=self.remove_accounts)
         remove_button.pack(padx=5, pady=5)
 
     def update_list(self):
         search_term = self.list_search_var.get().lower()
-        self.account_listbox.delete(0, tk.END)
+        self.account_tree.delete(*self.account_tree.get_children())
         for account in self.pm.list_accounts():
             if search_term in account.lower():
-                self.account_listbox.insert(tk.END, account)
+                star = self.star_filled if self.pm.is_favorite(account) else self.star_empty
+                self.account_tree.insert('', 'end', values=(star, account))
 
     def update_remove_list(self):
         search_term = self.remove_search_var.get().lower()
-        self.remove_listbox.delete(0, tk.END)
+        self.remove_tree.delete(*self.remove_tree.get_children())
         for account in self.pm.list_accounts():
             if search_term in account.lower():
-                self.remove_listbox.insert(tk.END, account)
-
+                self.remove_tree.insert('', 'end', values=(account,))
+    
     def setup_change_master_password_tab(self):
         change_pass_frame = ttk.Frame(self.notebook)
         self.notebook.add(change_pass_frame, text="Change Master Password")
@@ -256,7 +338,8 @@ class PasswordManagerGUI:
     def on_account_select(self, event):
         selection = event.widget.curselection()
         if selection:
-            account_name = event.widget.get(selection[0])
+            full_text = event.widget.get(selection[0])
+            account_name = full_text[2:]  # Remove the star character and space
             account = self.pm.get_account(account_name)
             if account:
                 self.account_info.set(f"Username: {account['username']}\nPassword: {account['password']}")
@@ -264,11 +347,47 @@ class PasswordManagerGUI:
             else:
                 self.account_info.set("Account information not found.")
                 self.copy_button.config(state='disabled')
+
+            # Toggle favorite status
+            if full_text.startswith(self.star_empty):
+                self.pm.add_to_favorites(account_name)
+            elif full_text.startswith(self.star_filled):
+                self.pm.remove_from_favorites(account_name)
+            self.update_list()
+            self.update_favorites()
+
+    def update_favorites(self):
+        self.favorites_tree.delete(*self.favorites_tree.get_children())
+        for account in self.pm.get_favorites():
+            self.favorites_tree.insert('', 'end', values=(account,))
+        
+    def on_favorite_select(self, event):
+        selection = self.favorites_tree.selection()
+        if selection:
+            account_name = self.favorites_tree.item(selection[0], 'values')[0]
+            account = self.pm.get_account(account_name)
+            if account:
+                self.favorite_info.set(f"Username: {account['username']}\nPassword: {account['password']}")
+                self.copy_favorite_button.config(state='normal')
+            else:
+                self.favorite_info.set("Account information not found.")
+                self.copy_favorite_button.config(state='disabled')
+
+    def copy_favorite_password(self):
+        selection = self.favorites_tree.selection()
+        if selection:
+            account_name = self.favorites_tree.item(selection[0], 'values')[0]
+            account = self.pm.get_account(account_name)
+            if account:
+                self.master.clipboard_clear()
+                self.master.clipboard_append(account['password'])
+                self.schedule_clipboard_clear()
         
     def copy_password(self):
-        selection = self.account_listbox.curselection()
+        selection = self.account_tree.selection()
         if selection:
-            account_name = self.account_listbox.get(selection[0])
+            item = selection[0]
+            account_name = self.account_tree.item(item, 'values')[1]
             account = self.pm.get_account(account_name)
             if account:
                 self.master.clipboard_clear()
@@ -284,12 +403,12 @@ class PasswordManagerGUI:
 
         
     def remove_accounts(self):
-        selected_indices = self.remove_listbox.curselection()
-        if not selected_indices:
+        selected_items = self.remove_tree.selection()
+        if not selected_items:
             messagebox.showerror("Error", "Please select at least one account to remove.")
             return
         
-        selected_accounts = [self.remove_listbox.get(i) for i in selected_indices]
+        selected_accounts = [self.remove_tree.item(item, 'values')[0] for item in selected_items]
         if messagebox.askyesno("Confirm", f"Are you sure you want to remove these accounts?\n{', '.join(selected_accounts)}"):
             removed_accounts = []
             for account in selected_accounts:
@@ -334,14 +453,9 @@ class PasswordManagerGUI:
         self.confirm_master_pass_entry.delete(0, tk.END)
         
     def refresh_account_lists(self):
-        accounts = self.pm.list_accounts()
-        self.list_search_var.set("")  # Clear search bar
-        self.remove_search_var.set("")  # Clear search bar
-        self.account_listbox.delete(0, tk.END)
-        self.remove_listbox.delete(0, tk.END)
-        for account in accounts:
-            self.account_listbox.insert(tk.END, account)
-            self.remove_listbox.insert(tk.END, account)
+        self.update_list()
+        self.update_remove_list()
+        self.update_favorites()
         
     def run(self):
         master_password = self.get_master_password()
