@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
+import ttkbootstrap as ttkb
 import random
 import string
 import hashlib
@@ -12,6 +13,7 @@ from collections import deque
 import pystray
 from PIL import Image, ImageTk
 import io
+import os
 
 class PasswordManager:
     def __init__(self):
@@ -123,6 +125,12 @@ class PasswordManagerGUI:
         self.master.title("Password Manager")
         self.master.geometry("400x300")
         self.master.withdraw()  # Hide the main window initially
+        
+        self.config_file = "config.json"
+        self.load_config()
+        
+        self.style = ttkb.Style(theme="darkly" if self.dark_mode else "flatly")
+        
         self.center_window(self.master)  # Center the main window
         
         self.setup_gui()
@@ -130,6 +138,19 @@ class PasswordManagerGUI:
         # Define Unicode characters for stars
         self.star_empty = "☆"
         self.star_filled = "★"
+        
+    def load_config(self):
+        if os.path.exists(self.config_file):
+            with open(self.config_file, 'r') as f:
+                config = json.load(f)
+                self.dark_mode = config.get('dark_mode', False)
+        else:
+            self.dark_mode = False
+            
+    def save_config(self):
+        config = {'dark_mode': self.dark_mode}
+        with open(self.config_file, 'w') as f:
+            json.dump(config, f)
 
 
     def setup_hotkeys(self):
@@ -162,6 +183,64 @@ class PasswordManagerGUI:
         self.setup_favorites_tab()
         self.setup_remove_tab()
         self.setup_change_master_password_tab()
+        self.setup_settings_tab()
+    
+    def setup_settings_tab(self):
+        settings_frame = ttk.Frame(self.notebook)
+        self.notebook.add(settings_frame, text="Settings")
+        
+        # Dark mode toggle
+        dark_mode_frame = ttk.Frame(settings_frame)
+        dark_mode_frame.pack(padx=20, pady=20, fill='x')
+        
+        ttk.Label(dark_mode_frame, text="Dark Mode:").pack(side=tk.LEFT, padx=(0, 10))
+        self.dark_mode_switch = ttk.Checkbutton(dark_mode_frame, text="Enable", 
+                                                command=self.toggle_dark_mode, 
+                                                style='Switch.TCheckbutton')
+        self.dark_mode_switch.pack(side=tk.LEFT)
+        
+        # Set the initial state of the switch based on the loaded config
+        self.dark_mode_switch.state(['selected' if self.dark_mode else '!selected'])
+        
+    def toggle_dark_mode(self):
+        self.dark_mode = not self.dark_mode
+        if self.dark_mode:
+            self.style.theme_use("darkly")
+        else:
+            self.style.theme_use("flatly")
+        self.update_ui_colors()
+        self.save_config()
+        
+    def update_ui_colors(self):
+        bg_color = self.style.lookup('TFrame', 'background')
+        fg_color = self.style.lookup('TLabel', 'foreground')
+        
+        for widget in self.master.winfo_children():
+            if isinstance(widget, tk.Frame) or isinstance(widget, ttk.Frame):
+                widget.configure(style='TFrame')
+            elif isinstance(widget, tk.Label) or isinstance(widget, ttk.Label):
+                widget.configure(style='TLabel')
+            elif isinstance(widget, tk.Entry) or isinstance(widget, ttk.Entry):
+                widget.configure(style='TEntry')
+            elif isinstance(widget, tk.Button) or isinstance(widget, ttk.Button):
+                widget.configure(style='TButton')
+        
+        for tab in self.notebook.winfo_children():
+            for widget in tab.winfo_children():
+                if isinstance(widget, tk.Frame) or isinstance(widget, ttk.Frame):
+                    widget.configure(style='TFrame')
+                elif isinstance(widget, tk.Label) or isinstance(widget, ttk.Label):
+                    widget.configure(style='TLabel')
+                elif isinstance(widget, tk.Entry) or isinstance(widget, ttk.Entry):
+                    widget.configure(style='TEntry')
+                elif isinstance(widget, tk.Button) or isinstance(widget, ttk.Button):
+                    widget.configure(style='TButton')
+                elif isinstance(widget, tk.Listbox):
+                    widget.configure(bg=bg_color, fg=fg_color)
+                elif isinstance(widget, ttk.Treeview):
+                    style = ttk.Style()
+                    style.configure("Treeview", background=bg_color, foreground=fg_color, fieldbackground=bg_color)
+                    style.configure("Treeview.Heading", background=bg_color, foreground=fg_color)
         
     def setup_add_tab(self):
         add_frame = ttk.Frame(self.notebook)
@@ -502,7 +581,7 @@ class PasswordManagerGUI:
                 self.refresh_account_lists()
                 self.master.deiconify()  # Show the main window
                 self.center_window(self.master)  # Center the main window again after deiconify
-                self.master.protocol("WM_DELETE_WINDOW", self.master.quit)  # Handle window close event
+                self.master.protocol("WM_DELETE_WINDOW", self.on_closing)  # Handle window close event
             except:
                 messagebox.showerror("Error", "Incorrect master password.")
                 self.master.quit()
@@ -510,6 +589,11 @@ class PasswordManagerGUI:
         else:
             self.master.quit()
             sys.exit()
+
+    def on_closing(self):
+        self.save_config()
+        self.master.quit()
+
 
     def get_master_password(self):
         password_window = tk.Toplevel(self.master)
@@ -599,7 +683,7 @@ class PasswordManagerGUI:
             messagebox.showerror("Error", "Failed to update password.")
 
 if __name__ == "__main__":
-    root = tk.Tk()
+    root = ttkb.Window(themename="flatly")
     app = PasswordManagerGUI(root)
     app.run()
     root.mainloop()
