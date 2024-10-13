@@ -107,7 +107,14 @@ class PasswordManager:
         return account_name in self.favorites
 
     def get_favorites(self):
-        return sorted([account for account in self.password_dict if account in self.favorites])   
+        return sorted([account for account in self.password_dict if account in self.favorites])
+    
+    def update_password(self, account_name, new_password):
+        if account_name in self.password_dict:
+            self.password_dict[account_name]['password'] = new_password
+            self.save_passwords()
+            return True
+        return False
 
 class PasswordManagerGUI:
     def __init__(self, master):
@@ -196,10 +203,22 @@ class PasswordManagerGUI:
         self.account_info = tk.StringVar()
         ttk.Label(list_frame, textvariable=self.account_info).pack(padx=5, pady=5)
         
-        self.copy_button = ttk.Button(list_frame, text="Copy Password", command=self.copy_password)
-        self.copy_button.pack(padx=5, pady=5)
+        # Button frame
+        button_frame = ttk.Frame(list_frame)
+        button_frame.pack(expand=True, fill='x', padx=5, pady=5)
+        
+        # Center buttons within the frame
+        button_frame.columnconfigure(0, weight=1)
+        button_frame.columnconfigure(2, weight=1)
+        
+        self.copy_button = ttk.Button(button_frame, text="Copy Password", command=self.copy_password)
+        self.copy_button.grid(row=0, column=1, pady=(0, 5))
         self.copy_button.config(state='disabled')
-
+        
+        self.generate_button = ttk.Button(button_frame, text="Generate New Password", command=self.generate_new_password)
+        self.generate_button.grid(row=1, column=1)
+        self.generate_button.config(state='disabled')
+    
     def on_account_click(self, event):
         region = self.account_tree.identify("region", event.x, event.y)
         if region == "cell":
@@ -211,6 +230,7 @@ class PasswordManagerGUI:
                     self.toggle_favorite(values[1])  # values[1] is the account name
                 elif column == '#2':  # Account name column
                     self.show_account_info(values[1])
+                    self.generate_button.config(state='normal')
 
     def show_account_info(self, account_name):
         account = self.pm.get_account(account_name)
@@ -242,9 +262,21 @@ class PasswordManagerGUI:
         self.favorite_info = tk.StringVar()
         ttk.Label(favorites_frame, textvariable=self.favorite_info).pack(padx=5, pady=5)
         
-        self.copy_favorite_button = ttk.Button(favorites_frame, text="Copy Password", command=self.copy_favorite_password)
-        self.copy_favorite_button.pack(padx=5, pady=5)
+        # Button frame
+        button_frame = ttk.Frame(favorites_frame)
+        button_frame.pack(expand=True, fill='x', padx=5, pady=5)
+        
+        # Center buttons within the frame
+        button_frame.columnconfigure(0, weight=1)
+        button_frame.columnconfigure(2, weight=1)
+        
+        self.copy_favorite_button = ttk.Button(button_frame, text="Copy Password", command=self.copy_favorite_password)
+        self.copy_favorite_button.grid(row=0, column=1, pady=(0, 5))
         self.copy_favorite_button.config(state='disabled')
+        
+        self.generate_favorite_button = ttk.Button(button_frame, text="Generate New Password", command=self.generate_new_favorite_password)
+        self.generate_favorite_button.grid(row=1, column=1)
+        self.generate_favorite_button.config(state='disabled')
         
     def setup_remove_tab(self):
         remove_frame = ttk.Frame(self.notebook)
@@ -318,18 +350,20 @@ class PasswordManagerGUI:
         else:
             messagebox.showerror("Error", "Please fill in all fields.")
         
-    def show_new_password(self, password):
+    def show_new_password(self, password, is_update=False):
         new_window = tk.Toplevel(self.master)
         new_window.title("New Password")
-        new_window.geometry("300x100")
+        new_window.geometry("300x150")
         self.center_window(new_window)
         
-        ttk.Label(new_window, text=f"Generated Password: {password}").pack(padx=10, pady=10)
+        action = "Updated" if is_update else "Generated"
+        ttk.Label(new_window, text=f"{action} Password:").pack(padx=10, pady=(10, 0))
+        ttk.Label(new_window, text=password, font=('TkDefaultFont', 12, 'bold')).pack(padx=10, pady=(0, 10))
         
         def copy_and_close():
             self.master.clipboard_clear()
             self.master.clipboard_append(password)
-            self.schedule_clipboard_clear()  # Add this line
+            self.schedule_clipboard_clear()
             new_window.destroy()
         
         copy_button = ttk.Button(new_window, text="Copy Password", command=copy_and_close)
@@ -369,9 +403,11 @@ class PasswordManagerGUI:
             if account:
                 self.favorite_info.set(f"Username: {account['username']}\nPassword: {account['password']}")
                 self.copy_favorite_button.config(state='normal')
+                self.generate_favorite_button.config(state='normal')
             else:
                 self.favorite_info.set("Account information not found.")
                 self.copy_favorite_button.config(state='disabled')
+                self.generate_favorite_button.config(state='disabled')
 
     def copy_favorite_password(self):
         selection = self.favorites_tree.selection()
@@ -496,6 +532,7 @@ class PasswordManagerGUI:
 
         button_frame = ttk.Frame(password_window)
         button_frame.pack(pady=10)
+        
 
         def submit():
             nonlocal attempts_left
@@ -535,6 +572,31 @@ class PasswordManagerGUI:
         window.destroy()
         self.master.quit()
         sys.exit()
+
+    def generate_new_password(self):
+        selection = self.account_tree.selection()
+        if selection:
+            item = selection[0]
+            account_name = self.account_tree.item(item, 'values')[1]
+            self.generate_and_update_password(account_name)
+
+    def generate_new_favorite_password(self):
+        selection = self.favorites_tree.selection()
+        if selection:
+            account_name = self.favorites_tree.item(selection[0], 'values')[0]
+            self.generate_and_update_password(account_name)
+
+    def generate_and_update_password(self, account_name):
+        new_password = self.pm.generate_password()
+        if self.pm.update_password(account_name, new_password):
+            self.show_new_password(new_password, is_update=True)
+            self.refresh_account_lists()
+            if self.notebook.index(self.notebook.select()) == 1:  # List of Accounts tab
+                self.show_account_info(account_name)
+            elif self.notebook.index(self.notebook.select()) == 2:  # Favorites tab
+                self.on_favorite_select(None)
+        else:
+            messagebox.showerror("Error", "Failed to update password.")
 
 if __name__ == "__main__":
     root = tk.Tk()
